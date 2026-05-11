@@ -369,10 +369,11 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     }
 
 #ifdef GGML_USE_ILUVATAR
-    // CoreX cuBLAS 对大 batch 更快（mmq 内核 warpSize=64 下并行度受限）。
-    // ne11=1 时 mmq 无 dequant 开销更优（~176 vs ~152 t/s），
-    // ne11>=512 时 cuBLAS GEMM 远超 mmq（~18121 vs ~389 t/s）。
-    return ne11 <= 8;
+    // CoreX cuBLAS (ixBLAS) 对大 batch 更快（MMQ 内核 warpSize=64 下并行度受限）。
+    // ne11=1 时 MMQ 无 dequant 开销更优（~176 vs ~152 t/s），
+    // ne11>=512 时 cuBLAS GEMM 远超 MMQ（~18121 vs ~389 t/s）。
+    // 中间范围 (9-64) 需权衡 dequant 开销与 GEMM 吞吐，暂设 32。
+    return ne11 <= 32;
 #endif
 
     return (!GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;

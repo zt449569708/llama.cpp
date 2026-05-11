@@ -30,8 +30,7 @@ file(GLOB GGML_SOURCES_ILUVATAR "../ggml-cuda/*.cu")
 # 模板实例化文件
 file(GLOB SRCS "../ggml-cuda/template-instances/fattn-tile*.cu")
 list(APPEND GGML_SOURCES_ILUVATAR ${SRCS})
-file(GLOB SRCS "../ggml-cuda/template-instances/fattn-mma*.cu")
-list(APPEND GGML_SOURCES_ILUVATAR ${SRCS})
+# fattn-mma 使用 Tensor Core MMA 指令，Iluvatar 不支持，不编译
 file(GLOB SRCS "../ggml-cuda/template-instances/mmq*.cu")
 list(APPEND GGML_SOURCES_ILUVATAR ${SRCS})
 file(GLOB SRCS "../ggml-cuda/template-instances/mmf*.cu")

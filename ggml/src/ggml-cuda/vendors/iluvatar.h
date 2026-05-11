@@ -86,8 +86,11 @@ static inline cublasStatus_t cublasGemmBatchedEx_compat(
                         iluvatar_compute_type_to_cuda(computeType), algo);
 }
 // 宏重定义 cuBLAS 公共 API：将 cublasComputeType_t 参数转换为 cudaDataType。
-// 这些宏在 #include <cublas_v2.h> 之后生效，仅在此文件的翻译单元内可见。
+// 使用 push_macro/pop_macro 隔离，防止影响 compat 函数内部调用或其他头文件。
 // 如果未来引入第三方库头文件也引用了 cublasGemmEx，需评估宏展开的影响。
+#pragma push_macro("cublasGemmEx")
+#pragma push_macro("cublasGemmStridedBatchedEx")
+#pragma push_macro("cublasGemmBatchedEx")
 #define cublasGemmEx cublasGemmEx_compat
 #define cublasGemmStridedBatchedEx cublasGemmStridedBatchedEx_compat
 #define cublasGemmBatchedEx cublasGemmBatchedEx_compat

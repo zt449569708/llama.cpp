@@ -2,7 +2,7 @@
 #include "top-k.cuh"
 
 #if defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)
-// CoreX SDK CUB 不含 DeviceSegmentedSort，回退到 bitonic sort
+// CoreX SDK CUB 不含 DeviceSegmentedSort
 #    include <cub/cub.cuh>
 #    if (CCCL_MAJOR_VERSION >= 3 && CCCL_MINOR_VERSION >= 2)
 #        define CUB_TOP_K_AVAILABLE
@@ -37,14 +37,6 @@ static void top_k_cub(ggml_cuda_pool & pool,
 }
 
 #elif defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)  // CUB_TOP_K_AVAILABLE
-
-static int next_power_of_2(int x) {
-    int n = 1;
-    while (n < x) {
-        n *= 2;
-    }
-    return n;
-}
 
 #endif                            // CUB_TOP_K_AVAILABLE
 
@@ -86,6 +78,24 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     }
     CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
                                  cudaMemcpyDeviceToDevice, stream));
+#elif defined(GGML_ILUVATAR_CUB_RADIX_SORT)
+    // Iluvatar: DeviceSegmentedRadixSort 性能优于 bitonic sort
+    {
+        const int    ncols_pad      = next_power_of_2(ncols);
+        const size_t shared_mem     = ncols_pad * sizeof(int);
+        const size_t max_shared_mem = ggml_cuda_info().devices[ggml_cuda_get_device()].smpb;
+
+        ggml_cuda_pool_alloc<int> temp_dst_alloc(pool, ncols * nrows);
+        int *                     tmp_dst = temp_dst_alloc.get();
+
+        if (shared_mem > max_shared_mem || ncols > 1024) {
+            argsort_f32_i32_cuda_iluvatar(pool, src0_d, tmp_dst, ncols, nrows, GGML_SORT_ORDER_DESC, stream);
+        } else {
+            argsort_f32_i32_cuda_bitonic(src0_d, tmp_dst, ncols, nrows, GGML_SORT_ORDER_DESC, stream);
+        }
+        CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
+                                     cudaMemcpyDeviceToDevice, stream));
+    }
 #else                             // GGML_CUDA_USE_CUB
     ggml_cuda_pool_alloc<int> temp_dst_alloc(pool, ncols * nrows);
     int *                     tmp_dst = temp_dst_alloc.get();

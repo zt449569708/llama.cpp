@@ -262,7 +262,7 @@ Instructions for adding support for new models: [HOWTO-add-model.md](docs/develo
 - [llmaz](https://github.com/InftyAI/llmaz) - ☸️ Easy, advanced inference platform for large language models on Kubernetes.
 - [LLMKube](https://github.com/defilantech/llmkube) - Kubernetes operator for llama.cpp with multi-GPU and Apple Silicon Metal
   support"
-</details>
+  </details>
 
 <details>
 <summary>Games</summary>
@@ -283,6 +283,7 @@ Instructions for adding support for new models: [HOWTO-add-model.md](docs/develo
 | [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
+| [Iluvatar](#天数智芯-iluvatar-gpu) | Iluvatar GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
 | [ZenDNN](docs/build.md#zendnn) | AMD CPU |
 | [Vulkan](docs/build.md#vulkan) | GPU |
@@ -333,7 +334,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-cli -m model.gguf
-
+    
     # > hi, who are you?
     # Hi there! I'm your helpful assistant! I'm an AI-powered chatbot designed to assist and provide information to users like you. I'm here to help answer your questions, provide guidance, and offer support on a wide range of topics. I'm a friendly and knowledgeable AI, and I'm always happy to help with anything you need. What's on your mind, and how can I assist you today?
     #
@@ -349,7 +350,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
     ```bash
     # use the "chatml" template (use -h to see the list of supported templates)
     llama-cli -m model.gguf -cnv --chat-template chatml
-
+    
     # use a custom template
     llama-cli -m model.gguf -cnv --in-prefix 'User: ' --reverse-prompt 'User:'
     ```
@@ -361,7 +362,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-cli -m model.gguf -n 256 --grammar-file grammars/json.gbnf -p 'Request: schedule a call at 8pm; Command:'
-
+    
     # {"appointmentTime": "8pm", "appointmentDetails": "schedule a a call"}
     ```
 
@@ -381,7 +382,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-server -m model.gguf --port 8080
-
+    
     # Basic web UI can be accessed via browser: http://localhost:8080
     # Chat completion endpoint: http://localhost:8080/v1/chat/completions
     ```
@@ -434,7 +435,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
     ```bash
     # custom grammar
     llama-server -m model.gguf --grammar-file grammar.gbnf
-
+    
     # JSON
     llama-server -m model.gguf --grammar-file grammars/json.gbnf
     ```
@@ -451,7 +452,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-perplexity -m model.gguf -f file.txt
-
+    
     # [1]15.2701,[2]5.4007,[3]5.3073,[4]6.2965,[5]5.8940,[6]5.6096,[7]5.7942,[8]4.9297, ...
     # Final estimate: PPL = 5.4007 +/- 0.67339
     ```
@@ -478,7 +479,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-bench -m model.gguf
-
+    
     # Output:
     # | model               |       size |     params | backend    | threads |          test |                  t/s |
     # | ------------------- | ---------: | ---------: | ---------- | ------: | ------------: | -------------------: |
@@ -499,7 +500,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
 
     ```bash
     llama-simple -m model.gguf
-
+    
     # Hello my name is Kaitlyn and I am a 16 year old girl. I am a junior in high school and I am currently taking a class called "The Art of
     ```
 
@@ -587,6 +588,56 @@ automatically. For example:
 ```console
 $ echo "source ~/.llama-completion.bash" >> ~/.bashrc
 ```
+
+## 天数智芯 Iluvatar GPU
+
+本版本为 `llama.cpp` 针对天数智芯（Iluvatar）GPU 后端的实验性适配实现，仅用于测试。
+
+### 前置条件
+
+- 天数智芯 GPU 硬件（MR100 / BI150 / MR50 等）
+- CoreX SDK（默认安装路径 `/usr/local/corex`）
+- Linux 操作系统
+
+确认编译器已安装：
+
+```bash
+which clang++
+# 默认路径: /usr/local/corex/bin/clang++
+```
+
+### 编译
+
+```bash
+cmake -B build -DGGML_ILUVATAR=ON -DGGML_CUDA_GRAPHS=ON
+cmake --build build --config Release
+```
+
+自定义 CoreX SDK 路径：
+
+```bash
+cmake -B build -DGGML_ILUVATAR=ON \
+  -DGGML_CUDA_GRAPHS=ON \
+  -DILUVATAR_CUDA_PATH=/path/to/corex
+cmake --build build --config Release
+```
+
+### 运行
+
+```bash
+# 单 GPU 推理
+./build/bin/llama-cli -m model.gguf -ngl 99
+
+# 性能测试
+./build/bin/llama-bench -m model.gguf -p 512,1024 -ngl 99
+
+# 启动 API 服务
+./build/bin/llama-server -m model.gguf -ngl 99 --host 0.0.0.0 --port 8080
+```
+
+### 已知问题
+
+- 稠密模型（如 Qwen3.6-27B 等）的量化模型在 TG（Token Generation）阶段输出性能较低
 
 ## Dependencies
 

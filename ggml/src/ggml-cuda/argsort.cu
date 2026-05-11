@@ -1,11 +1,18 @@
 #include "argsort.cuh"
 
 #ifdef GGML_CUDA_USE_CUB
-#    include <cub/cub.cuh>
-#    if (CCCL_MAJOR_VERSION >= 3 && CCCL_MINOR_VERSION >= 1)
-#        define STRIDED_ITERATOR_AVAILABLE
-#    endif
+#    if !defined(GGML_USE_ILUVATAR)
+#        include <cub/cub.cuh>
+#        if (CCCL_MAJOR_VERSION >= 3 && CCCL_MINOR_VERSION >= 1)
+#            define STRIDED_ITERATOR_AVAILABLE
+#        endif
 using namespace cub;
+#    else
+// Iluvatar: CoreX CUB lacks DeviceSegmentedSort, but has DeviceSegmentedRadixSort
+#        include <cub/cub.cuh>
+#        define GGML_ILUVATAR_CUB_RADIX_SORT
+using namespace cub;
+#    endif
 #endif  // GGML_CUDA_USE_CUB
 
 static __global__ void init_indices(int * indices, const int ncols, const int nrows) {
@@ -141,6 +148,69 @@ void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
 }
 #endif  // GGML_CUDA_USE_CUB
 
+#ifdef GGML_ILUVATAR_CUB_RADIX_SORT
+// Iluvatar: DeviceSegmentedRadixSort 替代 DeviceSegmentedSort
+void argsort_f32_i32_cuda_iluvatar(ggml_cuda_pool & pool,
+                                   const float *    x,
+                                   int *            dst,
+                                   const int        ncols,
+                                   const int        nrows,
+                                   ggml_sort_order  order,
+                                   cudaStream_t     stream) {
+    ggml_cuda_pool_alloc<int>   temp_indices_alloc(pool, ncols * nrows);
+    ggml_cuda_pool_alloc<float> temp_keys_alloc(pool, ncols * nrows);
+
+    int *   temp_indices = temp_indices_alloc.get();
+    float * temp_keys    = temp_keys_alloc.get();
+
+    static const int block_size = 256;
+    const dim3 grid_size((ncols + block_size - 1) / block_size, nrows);
+    init_indices<<<grid_size, block_size, 0, stream>>>(temp_indices, ncols, nrows);
+
+    // 初始化分段偏移
+    const int nrows_offset = nrows + 1;
+    ggml_cuda_pool_alloc<int> offsets_alloc(pool, nrows_offset);
+    int * d_offsets = offsets_alloc.get();
+    const dim3 offset_grid((nrows_offset + block_size - 1) / block_size);
+    init_offsets<<<offset_grid, block_size, 0, stream>>>(d_offsets, ncols, nrows);
+
+    CUDA_CHECK(cudaMemcpyAsync(temp_keys, x, ncols * nrows * sizeof(float), cudaMemcpyDeviceToDevice, stream));
+
+    size_t temp_storage_bytes = 0;
+
+    if (order == GGML_SORT_ORDER_ASC) {
+        CUDA_CHECK(DeviceSegmentedRadixSort::SortPairs(
+            nullptr, temp_storage_bytes,
+            temp_keys, temp_keys, temp_indices, dst,
+            ncols * nrows, nrows, d_offsets, d_offsets + 1,
+            0, sizeof(float) * 8, stream));
+    } else {
+        CUDA_CHECK(DeviceSegmentedRadixSort::SortPairsDescending(
+            nullptr, temp_storage_bytes,
+            temp_keys, temp_keys, temp_indices, dst,
+            ncols * nrows, nrows, d_offsets, d_offsets + 1,
+            0, sizeof(float) * 8, stream));
+    }
+
+    ggml_cuda_pool_alloc<uint8_t> temp_storage_alloc(pool, temp_storage_bytes);
+    void * d_temp_storage = temp_storage_alloc.get();
+
+    if (order == GGML_SORT_ORDER_ASC) {
+        CUDA_CHECK(DeviceSegmentedRadixSort::SortPairs(
+            d_temp_storage, temp_storage_bytes,
+            temp_keys, temp_keys, temp_indices, dst,
+            ncols * nrows, nrows, d_offsets, d_offsets + 1,
+            0, sizeof(float) * 8, stream));
+    } else {
+        CUDA_CHECK(DeviceSegmentedRadixSort::SortPairsDescending(
+            d_temp_storage, temp_storage_bytes,
+            temp_keys, temp_keys, temp_indices, dst,
+            ncols * nrows, nrows, d_offsets, d_offsets + 1,
+            0, sizeof(float) * 8, stream));
+    }
+}
+#endif // GGML_ILUVATAR_CUB_RADIX_SORT
+
 // Bitonic sort implementation
 template<typename T>
 static inline __device__ void ggml_cuda_swap(T & a, T & b) {
@@ -199,14 +269,6 @@ static __global__ void k_argsort_f32_i32(const float * x, int * dst, const int n
     }
 }
 
-static int next_power_of_2(int x) {
-    int n = 1;
-    while (n < x) {
-        n *= 2;
-    }
-    return n;
-}
-
 void argsort_f32_i32_cuda_bitonic(const float *   x,
                                   int *           dst,
                                   const int       ncols,
@@ -259,6 +321,19 @@ void ggml_cuda_op_argsort(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         argsort_f32_i32_cuda_cub(pool, src0_d, (int *) dst_d, ncols, nrows, order, stream);
     } else {
         argsort_f32_i32_cuda_bitonic(src0_d, (int *) dst_d, ncols, nrows, order, stream);
+    }
+#elif defined(GGML_ILUVATAR_CUB_RADIX_SORT)
+    // Iluvatar: 使用 DeviceSegmentedRadixSort，性能优于 bitonic sort
+    {
+        const int    ncols_pad      = next_power_of_2(ncols);
+        const size_t shared_mem     = ncols_pad * sizeof(int);
+        const size_t max_shared_mem = ggml_cuda_info().devices[ggml_cuda_get_device()].smpb;
+        if (shared_mem > max_shared_mem || ncols > 1024) {
+            ggml_cuda_pool & pool = ctx.pool();
+            argsort_f32_i32_cuda_iluvatar(pool, src0_d, (int *) dst_d, ncols, nrows, order, stream);
+        } else {
+            argsort_f32_i32_cuda_bitonic(src0_d, (int *) dst_d, ncols, nrows, order, stream);
+        }
     }
 #else
     argsort_f32_i32_cuda_bitonic(src0_d, (int *) dst_d, ncols, nrows, order, stream);

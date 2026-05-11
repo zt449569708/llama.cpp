@@ -1,11 +1,14 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
+#ifndef GGML_USE_ILUVATAR
 #include "fattn-mma-f16.cuh"
+#endif
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#ifndef GGML_USE_ILUVATAR
 template <int DKQ, int DV, int ncols2>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
@@ -240,6 +243,7 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
             break;
     }
 }
+#endif // GGML_USE_ILUVATAR
 
 #define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
     {                                                                                                            \
@@ -588,9 +592,11 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
         case BEST_FATTN_KERNEL_WMMA_F16:
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
             break;
+#ifndef GGML_USE_ILUVATAR
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
+#endif
     }
 }
 

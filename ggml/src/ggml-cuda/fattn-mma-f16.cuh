@@ -195,8 +195,13 @@ static __host__ fattn_mma_config ggml_cuda_fattn_mma_get_config(const int DKQ, c
     if (amd_wmma_available(cc)) {
         return ggml_cuda_fattn_mma_get_config_rdna(DKQ, DV, ncols);
     }
-    GGML_ASSERT(volta_mma_available(cc));
-    return ggml_cuda_fattn_mma_get_config_volta(DKQ, DV, ncols);
+    if (volta_mma_available(cc)) {
+        return ggml_cuda_fattn_mma_get_config_volta(DKQ, DV, ncols);
+    }
+    // Iluvatar and other platforms without Tensor Core MMA should not reach here.
+    // Return ampere config as safe fallback (runtime kernel selection avoids calling this path).
+    GGML_ASSERT(!"MMA kernel selected for platform without tensor core support");
+    return ggml_cuda_fattn_mma_get_config_ampere(DKQ, DV, ncols);
 }
 
 static constexpr __device__ fattn_mma_config ggml_cuda_fattn_mma_get_config(const int DKQ, const int DV, const int ncols) {
