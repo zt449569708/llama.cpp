@@ -450,7 +450,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
+#ifdef GGML_USE_ILUVATAR
+    // CoreX warpSize=64: vec kernel requires D % WARP_SIZE == 0 (D=64, 128, 256 all work).
+    const bool can_use_vector_kernel = Q->ne[0] >= 64 && Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+#else
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+#endif
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
@@ -540,15 +545,30 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // If there are no tensor cores available, use the generic tile kernel:
     if (can_use_vector_kernel) {
         if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
+#ifdef GGML_USE_ILUVATAR
+            // No tensor cores; tile kernel uses NVIDIA-tuned params (warpSize=32)
+            // that waste 50% of hardware warp capacity on Iluvatar (warpSize=64).
+            // Vec kernel (cols_per_block=1 for tg, cols_per_block=2 for prefill)
+            // fully utilizes 64-thread warps for all batch sizes where D % 64 == 0.
+            return BEST_FATTN_KERNEL_VEC;
+#else
             if (Q->ne[1] == 1) {
                 if (!gqa_opt_applies) {
                     return BEST_FATTN_KERNEL_VEC;
                 }
             }
+#endif
         } else {
             if (Q->ne[1] <= 2) {
                 return BEST_FATTN_KERNEL_VEC;
             }
+#ifdef GGML_USE_ILUVATAR
+            // D % 64 == 0 already ensured by can_use_vector_kernel.
+            // Vec kernel handles cols_per_block=2 prefill for quantized K/V too.
+            if (Q->ne[1] <= 4) {
+                return BEST_FATTN_KERNEL_VEC;
+            }
+#endif
         }
     }
     return BEST_FATTN_KERNEL_TILE;

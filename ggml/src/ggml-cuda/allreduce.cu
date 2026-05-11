@@ -1,6 +1,6 @@
 #include "allreduce.cuh"
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && !defined(GGML_USE_ILUVATAR)
 
 #include "convert.cuh"
 #include "ggml-impl.h"
@@ -383,7 +383,7 @@ static void ggml_cuda_ar_wait_for_compute(
         ggml_cuda_ar_pipeline * p, ggml_backend_cuda_context * cuda_ctx, int rank, int slot) {
     ggml_cuda_ar_event_slot & ev = p->ev_pool[rank][slot];
     CUDA_CHECK(cudaEventRecord(ev.app, cuda_ctx->stream()));
-    CUDA_CHECK(cudaStreamWaitEvent(p->streams[rank], ev.app));
+    CUDA_CHECK(cudaStreamWaitEvent(p->streams[rank], ev.app, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +623,7 @@ static bool ggml_cuda_ar_allreduce_copy_impl(
         // No-op on the first AR -- no prior record exists.
         if (p->host_large_read_done_valid) {
             const int peer = 1 - i;
-            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->host_large_read_done[peer]));
+            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->host_large_read_done[peer], 0));
         }
 
         if (!compute[i]) {
@@ -657,7 +657,7 @@ static bool ggml_cuda_ar_allreduce_copy_impl(
         // finish reading dev_tmp before our H2D overwrites it.  No-op on the
         // first copy_impl call.
         if (p->dev_tmp_kernel_done_valid) {
-            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->dev_tmp_kernel_done[i]));
+            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->dev_tmp_kernel_done[i], 0));
         }
 
         for (size_t c = 0; c < copy_chunks; ++c) {
@@ -665,7 +665,7 @@ static bool ggml_cuda_ar_allreduce_copy_impl(
             const size_t this_bytes = (nbytes - offset) < chunk_bytes ?
                 (nbytes - offset) : chunk_bytes;
 
-            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->ev_pool[peer][slot].cpy[c]));
+            CUDA_CHECK(cudaStreamWaitEvent(p->streams[i], p->ev_pool[peer][slot].cpy[c], 0));
             CUDA_CHECK(cudaMemcpyAsync(
                 p->dev_tmp[i] + offset, p->host_large[peer].host + offset, this_bytes,
                 cudaMemcpyHostToDevice, p->streams[i]));
@@ -678,7 +678,7 @@ static bool ggml_cuda_ar_allreduce_copy_impl(
         // Hand off from AR stream (copy engine) to compute stream: compute
         // stream waits for all H2Ds to finish, then runs the add_kernel.
         CUDA_CHECK(cudaEventRecord(p->ev_pool[i][slot].h2d, p->streams[i]));
-        CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[i][slot].h2d));
+        CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx[i]->stream(), p->ev_pool[i][slot].h2d, 0));
 
         const int block_size = 256;
         int n_blocks = (int) ((ne + block_size - 1) / block_size);
@@ -949,13 +949,15 @@ bool ggml_cuda_ar_allreduce(
     return ok;
 }
 
-#else // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+#else // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR)
 
-// HIP and MUSA lack the host-mapped pinned-memory APIs (cudaHostAllocPortable
-// / cudaHostAllocMapped / cudaHostGetDevicePointer) and __nanosleep that this
-// implementation relies on, so the internal AllReduce is a CUDA-only feature.
+// HIP, MUSA, and Iluvatar lack the host-mapped pinned-memory APIs
+// (cudaHostAllocPortable / cudaHostAllocMapped / cudaHostGetDevicePointer)
+// and __nanosleep (CoreX 不支持 PTX nanosleep 指令) that this implementation
+// relies on, so the internal AllReduce is a CUDA-only feature.
 // The dispatcher in ggml-cuda.cu treats a nullptr pipeline as "init failed"
 // and silently falls back to the meta backend's generic AllReduce.
+// Iluvatar 多 GPU 通信应使用 ixCCL (NCCL 等价实现)。
 ggml_cuda_ar_pipeline * ggml_cuda_ar_pipeline_init(const int *, size_t) {
     return nullptr;
 }
@@ -965,4 +967,4 @@ bool ggml_cuda_ar_allreduce(ggml_cuda_ar_pipeline *, ggml_backend_t *, ggml_tens
     return false;
 }
 
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && !defined(GGML_USE_ILUVATAR)

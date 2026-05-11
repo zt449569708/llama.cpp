@@ -66,7 +66,8 @@ enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_GCN,
     MMVQ_PARAMETERS_RDNA2,
     MMVQ_PARAMETERS_RDNA3_0,
-    MMVQ_PARAMETERS_RDNA4
+    MMVQ_PARAMETERS_RDNA4,
+    MMVQ_PARAMETERS_ILUVATAR
 };
 
 static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
@@ -78,6 +79,8 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
     return MMVQ_PARAMETERS_RDNA2;
 #elif defined(GCN) || defined(CDNA)
     return MMVQ_PARAMETERS_GCN;
+#elif defined(GGML_USE_ILUVATAR)
+    return MMVQ_PARAMETERS_ILUVATAR;
 #else
     return MMVQ_PARAMETERS_GENERIC;
 #endif
@@ -95,6 +98,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     }
     if (GGML_CUDA_CC_IS_GCN(cc) || GGML_CUDA_CC_IS_CDNA(cc)) {
         return MMVQ_PARAMETERS_GCN;
+    }
+    if (GGML_CUDA_CC_IS_ILUVATAR(cc)) {
+        return MMVQ_PARAMETERS_ILUVATAR;
     }
     return MMVQ_PARAMETERS_GENERIC;
 }
@@ -268,6 +274,12 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
             return get_mmvq_mmid_max_batch_gcn(type);
         }
     }
+
+    // Iluvatar
+    if (GGML_CUDA_CC_IS_ILUVATAR(cc)) {
+        return get_mmvq_mmid_max_batch_pascal_older(type);
+    }
+
     return MMVQ_MAX_BATCH_SIZE;
 }
 
@@ -284,6 +296,8 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
     return get_mmvq_mmid_max_batch_cdna(type);
 #elif defined(GCN)
     return get_mmvq_mmid_max_batch_gcn(type);
+#elif defined(GGML_USE_ILUVATAR)
+    return get_mmvq_mmid_max_batch_pascal_older(type);
 #elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == GGML_CUDA_CC_VOLTA || __CUDA_ARCH__ >= GGML_CUDA_CC_ADA_LOVELACE)
     return MMVQ_MAX_BATCH_SIZE;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
@@ -368,14 +382,29 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
         }
         return 1;
     }
+    if (table_id == MMVQ_PARAMETERS_ILUVATAR) {
+        // Iluvatar (MR100, warpSize=64): tuned per batch size.
+        if (ncols_dst == 1) {
+            return 2;  // 128 threads/block
+        }
+        if (ncols_dst <= 4) {
+            return 2;
+        }
+        return 1;
+    }
     return 1;
 }
 
 static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
-    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN) {
+    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_ILUVATAR) {
         switch (ncols_dst) {
             case 1:
+#ifdef GGML_USE_ILUVATAR
+                // Process 4 rows per block to reuse input vector (y) in L2 cache.
+                return 4;
+#else
                 return small_k ? nwarps : 1;
+#endif
             case 2:
             case 3:
             case 4:
@@ -393,6 +422,7 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
 
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
+GGML_ILUVATAR_NUM_VGPR(128)
 static __global__ void mul_mat_vec_q(
         const void * __restrict__ vx, const void * __restrict__ vy, const int32_t * __restrict__ ids, const ggml_cuda_mm_fusion_args_device fusion, float * __restrict__ dst,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t stride_row_x, const uint32_t stride_col_y,

@@ -808,6 +808,9 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     return ne11 <= 3;
                 }
                 return ne11 <= 8;
+            } else if (GGML_CUDA_CC_IS_ILUVATAR(cc)) {
+                // Iluvatar (MR100, warpSize=64): cuBLAS (ixBLAS) GEMV is faster than MMVF.
+                return false;
             }
             return ne11 <= 8;
         case GGML_TYPE_F16:
@@ -834,6 +837,10 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     return ne11 <= 2;
                 }
                 return ne11 <= 8;
+            } else if (GGML_CUDA_CC_IS_ILUVATAR(cc)) {
+                // Iluvatar (MR100, warpSize=64): cuBLAS (ixBLAS) GEMV is faster than MMVF.
+                // Verified with SmolLM2-135M-F16, tg64: 180→236 t/s (+31%).
+                return false;
             }
             return ne11 <= 8;
         case GGML_TYPE_BF16:
@@ -854,6 +861,10 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     return ne11 <= 3;
                 }
                 return ne11 <= 8;
+            } else if (GGML_CUDA_CC_IS_ILUVATAR(cc)) {
+                // Iluvatar (MR100, warpSize=64): cuBLAS (ixBLAS) GEMV is +71% faster than
+                // MMVF for BF16 dense models (verified with Qwen3.5-4B-BF16, tg64: 23→39 t/s).
+                return false;
             }
             return ne11 <= 8;
         default:

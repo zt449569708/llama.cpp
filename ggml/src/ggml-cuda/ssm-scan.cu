@@ -115,7 +115,11 @@ __global__ void __launch_bounds__(splitD, 1)
 
 // assumes as many threads as d_state
 template <int c_factor, int d_state>
+#ifdef GGML_USE_ILUVATAR
+__global__ void __launch_bounds__(d_state * 2, 1)
+#else
 __global__ void __launch_bounds__(d_state, 1)
+#endif
     ssm_scan_f32_group(
         const float * __restrict__ src0, const float * __restrict__ src1, const float * __restrict__ src2,
         const float * __restrict__ src3, const float * __restrict__ src4, const float * __restrict__ src5,
@@ -127,7 +131,7 @@ __global__ void __launch_bounds__(d_state, 1)
 
     const int warp     = threadIdx.x / WARP_SIZE;
     const int lane     = threadIdx.x % WARP_SIZE;
-    const int warp_idx = blockIdx.x  * c_factor + warp;
+    const int warp_idx = blockIdx.x * (blockDim.x / WARP_SIZE) + warp;
 
     const int head_idx =  warp_idx / d_head;
     const int head_off = (warp_idx % d_head) * sizeof(float);
@@ -202,7 +206,7 @@ static void ssm_scan_f32_cuda(const float * src0, const float * src1, const floa
     if (src3_nb1 == sizeof(float)) {
         // Mamba-2
         if (d_state == 128) {
-            constexpr int threads   = 128;
+            constexpr int threads   = 4 * WARP_SIZE;
             constexpr int num_warps = threads/WARP_SIZE;
 
             const dim3 blocks((n_head * head_dim + (num_warps - 1)) / num_warps, n_seq, 1);
@@ -211,7 +215,7 @@ static void ssm_scan_f32_cuda(const float * src0, const float * src1, const floa
                     src0_nb2, src0_nb3, src1_nb2, src1_nb3, src2_nb1, src2_nb2, src3_nb1,
                     src4_nb2, src4_nb3, src5_nb2, src5_nb3, s_off, n_head, head_dim, n_group, n_tok);
         } else if (d_state == 256) { // Falcon-H1
-            constexpr int threads   = 256;
+            constexpr int threads   = 8 * WARP_SIZE;
             constexpr int num_warps = threads/WARP_SIZE;
 
             const dim3 blocks((n_head * head_dim + (num_warps - 1)) / num_warps, n_seq, 1);

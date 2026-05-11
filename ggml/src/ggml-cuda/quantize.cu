@@ -223,7 +223,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
 
         float amax = fabsf(xi);
 #pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
+        for (int mask = WARP_SIZE/2; mask > 0; mask >>= 1) {
             amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, mask, WARP_SIZE));
         }
 

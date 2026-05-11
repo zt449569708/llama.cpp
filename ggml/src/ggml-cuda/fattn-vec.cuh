@@ -1,13 +1,15 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 
+// nwarps = nthreads / WARP_SIZE. NVIDIA (WARP_SIZE=32): 128→4 warps.
+// Iluvatar (WARP_SIZE=64): 256→4 warps (was 128→2 warps, underutilised).
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
-    return 128;
     GGML_UNUSED(cc);
+    return 4 * WARP_SIZE;
 }
 
 static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
-    return 128;
+    return 4 * WARP_SIZE;
 }
 
 // Currently llvm with the amdgcn target does not support unrolling loops
@@ -18,6 +20,7 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 #endif // __clang__
 template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap> // D == head size
 __launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 1)
+GGML_ILUVATAR_NUM_VGPR(128)
 static __global__ void flash_attn_ext_vec(
         const char * __restrict__ Q,
         const char * __restrict__ K,
@@ -105,7 +108,16 @@ static __global__ void flash_attn_ext_vec(
 
     const float slope = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
 
+#ifdef GGML_USE_ILUVATAR
+    // CoreX warpSize=64: D must be divisible by WARP_SIZE=64.
+    // Verified: D=64 works correctly (nwarps=2, all shared memory/register layouts valid).
+    if (D % WARP_SIZE != 0) {
+        NO_DEVICE_CODE;
+        return;
+    }
+#else
     static_assert(D % (2*WARP_SIZE) == 0, "D not divisible by 2*WARP_SIZE == 64.");
+#endif
     constexpr int nwarps = nthreads / WARP_SIZE;
     const int tid = WARP_SIZE*threadIdx.y + threadIdx.x;
     __builtin_assume(tid < nthreads);
@@ -282,7 +294,7 @@ static __global__ void flash_attn_ext_vec(
         for (int j = 0; j < ncols; ++j) {
 #pragma unroll
             for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
-                KQ_max_new[j] = fmaxf(KQ_max_new[j], __shfl_xor_sync(0xFFFFFFFF, KQ_max_new[j], offset, WARP_SIZE));
+                KQ_max_new[j] = fmaxf(KQ_max_new[j], GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, KQ_max_new[j], offset, WARP_SIZE));
             }
             const float KQ_max_scale = expf(KQ_max[j] - KQ_max_new[j]);
             KQ_max[j] = KQ_max_new[j];

@@ -300,13 +300,19 @@ static int mmq_get_nwarps_host(const int cc, const int warp_size) {
 }
 #else
 static int mmq_get_nwarps_host(const int /*cc*/, const int warp_size) {
+#ifdef GGML_USE_ILUVATAR
+    return 512/warp_size;
+#else
     return 256/warp_size;
+#endif
 }
 #endif // (GGML_USE_HIP)
 
 static constexpr __device__ int mmq_get_nwarps_device() {
 #if defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     return 8;
+#elif defined(GGML_USE_ILUVATAR)
+    return 512/ggml_cuda_get_physical_warp_size();
 #else
     return 256/ggml_cuda_get_physical_warp_size();
 #endif // AMD_MFMA_AVAILABLE

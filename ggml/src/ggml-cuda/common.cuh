@@ -33,6 +33,8 @@
 #include "vendors/hip.h"
 #elif defined(GGML_USE_MUSA)
 #include "vendors/musa.h"
+#elif defined(GGML_USE_ILUVATAR)
+#include "vendors/iluvatar.h"
 #else
 #include "vendors/cuda.h"
 #endif // defined(GGML_USE_HIP)
@@ -40,7 +42,11 @@
 #define STRINGIZE_IMPL(...) #__VA_ARGS__
 #define STRINGIZE(...) STRINGIZE_IMPL(__VA_ARGS__)
 
+#if defined(GGML_USE_ILUVATAR)
+#define WARP_SIZE 64
+#else
 #define WARP_SIZE 32
+#endif
 #define CUDART_HMAX   11070 // CUDA 11.7, min. ver. for which __hmax and __hmax2 are known to work (may be higher than needed)
 #define CUDART_HMASK  12000 // CUDA 12.0, min. ver. for half2 -> uint mask comparisons
 
@@ -98,10 +104,19 @@
 #define GGML_CUDA_CC_QY2 (GGML_CUDA_CC_OFFSET_MTHREADS + 0x220) // MTT S4000
 #define GGML_CUDA_CC_PH1 (GGML_CUDA_CC_OFFSET_MTHREADS + 0x310) // MTT S5000
 
-#define GGML_CUDA_CC_IS_MTHREADS(cc) (cc >= GGML_CUDA_CC_OFFSET_MTHREADS && cc < GGML_CUDA_CC_OFFSET_AMD)
+#define GGML_CUDA_CC_IS_MTHREADS(cc) (cc >= GGML_CUDA_CC_OFFSET_MTHREADS && cc < GGML_CUDA_CC_OFFSET_ILUVATAR)
 #define GGML_CUDA_CC_IS_QY1(cc)      (cc >= GGML_CUDA_CC_QY1 && cc < GGML_CUDA_CC_QY2)
 #define GGML_CUDA_CC_IS_QY2(cc)      (cc >= GGML_CUDA_CC_QY2 && cc < GGML_CUDA_CC_PH1)
-#define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1)
+#define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1 && cc < GGML_CUDA_CC_OFFSET_ILUVATAR)
+
+// Iluvatar (天数智芯)
+#define GGML_CUDA_CC_OFFSET_ILUVATAR  0x0200000
+#define GGML_CUDA_CC_IVCORE10         (GGML_CUDA_CC_OFFSET_ILUVATAR + 0x10)  // BI100
+#define GGML_CUDA_CC_IVCORE11         (GGML_CUDA_CC_OFFSET_ILUVATAR + 0x11)  // MR100, BI150, MR50
+
+#define GGML_CUDA_CC_IS_ILUVATAR(cc)  (cc >= GGML_CUDA_CC_OFFSET_ILUVATAR && cc < 0x0300000)
+#define GGML_CUDA_CC_IS_IVCORE10(cc)  (cc >= GGML_CUDA_CC_IVCORE10 && cc < GGML_CUDA_CC_IVCORE11)
+#define GGML_CUDA_CC_IS_IVCORE11(cc)  (cc >= GGML_CUDA_CC_IVCORE11 && cc < 0x0300000)
 
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
 #    define GGML_CUDA_USE_CUB
@@ -228,13 +243,13 @@ static const char * cu_get_error_str(CUresult err) {
 #define GGML_USE_VMM
 #endif // (!defined(GGML_USE_HIP) && !defined(GGML_CUDA_NO_VMM)) || (defined(GGML_USE_HIP) && !defined(GGML_HIP_NO_VMM))
 
-#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
 #define FP16_AVAILABLE
-#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
+#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
 
-#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
+#if defined(FP16_AVAILABLE) && (__CUDA_ARCH__ != 610 || defined(GGML_USE_ILUVATAR))
 #define FAST_FP16_AVAILABLE
-#endif // defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
+#endif // defined(FP16_AVAILABLE) && (__CUDA_ARCH__ != 610 || defined(GGML_USE_ILUVATAR))
 
 #if defined(GGML_USE_HIP) && defined(CDNA) && !defined(GGML_HIP_NO_MMQ_MFMA)
 #define AMD_MFMA_AVAILABLE
@@ -245,25 +260,25 @@ static const char * cu_get_error_str(CUresult err) {
 #endif // defined(GGML_USE_HIP) && defined(RDNA4)
 
 // The Volta instructions are in principle available on Turing or newer but they are effectively unusable:
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 #define VOLTA_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
 #define TURING_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define AMPERE_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL && __CUDA_ARCH__ < GGML_CUDA_CC_RUBIN
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL && __CUDA_ARCH__ < GGML_CUDA_CC_RUBIN
 #    define BLACKWELL_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define CP_ASYNC_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 
 #if !defined(GGML_CUDA_NO_FA) && !(defined(GGML_USE_MUSA) && __MUSA_ARCH__ < 220)
 #define FLASH_ATTN_AVAILABLE
@@ -271,11 +286,13 @@ static const char * cu_get_error_str(CUresult err) {
 
 static bool fp16_available(const int cc) {
     return ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_PASCAL ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_PH1);
 }
 
 static bool fast_fp16_available(const int cc) {
     return GGML_CUDA_CC_IS_AMD(cc) ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc) ||
         (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && fp16_available(cc));
 }
@@ -283,20 +300,23 @@ static bool fast_fp16_available(const int cc) {
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fast_fp16_hardware_available(const int cc) {
     return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610) || GGML_CUDA_CC_IS_AMD(cc) ||
-        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
+        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2) ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc);
 }
 
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fp16_mma_hardware_available(const int cc) {
     return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_VOLTA) ||
         GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc) ||
-        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
+        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2) ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc);
 }
 
 static bool bf16_mma_hardware_available(const int cc) {
     return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE) ||
         GGML_CUDA_CC_IS_CDNA(cc) || cc >= GGML_CUDA_CC_RDNA3 ||
-        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_PH1);
+        (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_PH1) ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc);
 }
 
 static bool fp32_mma_hardware_available(const int cc) {
@@ -339,6 +359,8 @@ static bool blackwell_mma_available(const int cc) {
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 #if defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
     return 64;
+#elif defined(GGML_USE_ILUVATAR)
+    return 64;
 #else
     return 32;
 #endif // defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
@@ -347,6 +369,8 @@ static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 // Maximum number of bytes that can be copied in a single instruction.
 static constexpr __device__ int ggml_cuda_get_max_cpy_bytes() {
 #ifdef GGML_USE_HIP
+    return 16;
+#elif defined(GGML_USE_ILUVATAR)
     return 16;
 #else
 #if __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
@@ -370,7 +394,11 @@ static __device__ void no_device_code(
     printf("%s:%d: ERROR: CUDA kernel %s has no device code compatible with CUDA arch %d. ggml-cuda.cu was compiled for: %s\n",
            file_name, line, function_name, arch, arch_list);
 #endif // defined(GGML_USE_HIP)
+#if defined(GGML_USE_ILUVATAR)
+    __builtin_trap();  // CoreX 不支持 PTX trap 指令
+#else
     __trap();
+#endif // defined(GGML_USE_ILUVATAR)
 
     GGML_UNUSED(no_device_code); // suppress unused function warning
 
@@ -406,22 +434,30 @@ struct ggml_cuda_unroll<1> {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ int warp_reduce_sum(int x) {
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
     return __reduce_add_sync(0xffffffff, x);
 #else
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+        x += GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width);
+#else
         x += __shfl_xor_sync(0xffffffff, x, offset, width);
+#endif
     }
     return x;
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_ILUVATAR) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 }
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+        x += GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width);
+#else
         x += __shfl_xor_sync(0xffffffff, x, offset, width);
+#endif
     }
     return x;
 }
@@ -430,8 +466,13 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+        a.x += GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, a.x, offset, width);
+        a.y += GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, a.y, offset, width);
+#else
         a.x += __shfl_xor_sync(0xffffffff, a.x, offset, width);
         a.y += __shfl_xor_sync(0xffffffff, a.y, offset, width);
+#endif
     }
     return a;
 }
@@ -441,7 +482,11 @@ static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
 #ifdef FP16_AVAILABLE
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+        a = __hadd2(a, GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, a, offset, width));
+#else
         a = __hadd2(a, __shfl_xor_sync(0xffffffff, a, offset, width));
+#endif
     }
     return a;
 
@@ -453,6 +498,16 @@ static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ int warp_reduce_all(int x) {
+#ifdef GGML_USE_ILUVATAR
+    // Iluvatar: __all_sync mask is ignored — ALL 64 threads participate.
+    // Always use manual reduction to be safe even when logical warp < 64.
+    (void)width;
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x = GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width) && x;
+    }
+    return x;
+#else
     if (width == ggml_cuda_get_physical_warp_size()) {
         return __all_sync(0xffffffff, x);
     } else {
@@ -462,10 +517,21 @@ static __device__ __forceinline__ int warp_reduce_all(int x) {
         }
         return x;
     }
+#endif // GGML_USE_ILUVATAR
 }
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ int warp_reduce_any(int x) {
+#ifdef GGML_USE_ILUVATAR
+    // Iluvatar: __any_sync mask is ignored — ALL 64 threads participate.
+    // Always use manual reduction to be safe even when logical warp < 64.
+    (void)width;
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x = GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width) || x;
+    }
+    return x;
+#else
     if (width == ggml_cuda_get_physical_warp_size()) {
         return __any_sync(0xffffffff, x);
     } else {
@@ -475,13 +541,18 @@ static __device__ __forceinline__ int warp_reduce_any(int x) {
         }
         return x;
     }
+#endif // GGML_USE_ILUVATAR
 }
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+        x = fmaxf(x, GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width));
+#else
         x = fmaxf(x, __shfl_xor_sync(0xffffffff, x, offset, width));
+#endif
     }
     return x;
 }
@@ -491,7 +562,11 @@ static __device__ __forceinline__ T warp_prefix_inclusive_sum(T x) {
     const int lane_id = threadIdx.x % width;
 #pragma unroll
     for (int offset = 1; offset < width; offset <<= 1) {
+#ifdef GGML_USE_ILUVATAR
+        const T t = GGML_SHFL_UP_SYNC(GGML_WARP_FULL_MASK, x, offset, width);
+#else
         const T t = __shfl_up_sync(0xffffffff, x, offset, width);
+#endif
         if (lane_id >= offset) {
             x += t;
         }
@@ -504,8 +579,13 @@ static __device__ __forceinline__ float2 warp_prefix_inclusive_sum(float2 a) {
     const int lane_id = threadIdx.x % width;
 #pragma unroll
     for (int offset = 1; offset < width; offset <<= 1) {
+#ifdef GGML_USE_ILUVATAR
+        const float t_x = GGML_SHFL_UP_SYNC(GGML_WARP_FULL_MASK, a.x, offset, width);
+        const float t_y = GGML_SHFL_UP_SYNC(GGML_WARP_FULL_MASK, a.y, offset, width);
+#else
         const float t_x = __shfl_up_sync(0xffffffff, a.x, offset, width);
         const float t_y = __shfl_up_sync(0xffffffff, a.y, offset, width);
+#endif
         if (lane_id >= offset) {
             a.x += t_x;
             a.y += t_y;
@@ -520,7 +600,11 @@ static __device__ __forceinline__ half2 warp_prefix_inclusive_sum(half2 a) {
     const int lane_id = threadIdx.x % width;
 #pragma unroll
     for (int offset = 1; offset < width; offset <<= 1) {
+#ifdef GGML_USE_ILUVATAR
+        const half2 t = GGML_SHFL_UP_SYNC(GGML_WARP_FULL_MASK, a, offset, width);
+#else
         const half2 t = __shfl_up_sync(0xffffffff, a, offset, width);
+#endif
         if (lane_id >= offset) {
             a = __hadd2(a, t);
         }
@@ -596,7 +680,11 @@ static __device__ T block_reduce(T val, T * shared_vals) {
     val                           = block_reduce_policy<reduce_method_t, T>::reduce(val);
     const unsigned int block_size = block_size_template == 0 ? blockDim.x : block_size_template;
     if (block_size > WARP_SIZE) {
+#ifdef GGML_USE_ILUVATAR
+        assert((block_size <= 4096) && (block_size % WARP_SIZE) == 0);
+#else
         assert((block_size <= 1024) && (block_size % WARP_SIZE) == 0);
+#endif
         const int warp_id = threadIdx.x / WARP_SIZE;
         const int lane_id = threadIdx.x % WARP_SIZE;
         if (lane_id == 0) {
@@ -644,16 +732,20 @@ static __device__ __forceinline__ half2 ggml_cuda_hmax2(const half2 a, const hal
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
+#if (!defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL) || defined(GGML_USE_HIP) || defined(GGML_USE_ILUVATAR) || defined(GGML_USE_MUSA)
 #pragma unroll
    for (int offset = width/2; offset > 0; offset >>= 1) {
+#ifdef GGML_USE_ILUVATAR
+       x = ggml_cuda_hmax2(x, GGML_SHFL_XOR_SYNC(GGML_WARP_FULL_MASK, x, offset, width));
+#else
        x = ggml_cuda_hmax2(x, __shfl_xor_sync(0xffffffff, x, offset, width));
+#endif
    }
    return x;
 #else
    GGML_UNUSED(x);
    NO_DEVICE_CODE;
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
+#endif // (!defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL) || defined(GGML_USE_HIP) || defined(GGML_USE_ILUVATAR) || defined(GGML_USE_MUSA)
 }
 
 #if (defined(CUDART_VERSION) && CUDART_VERSION < CUDART_HMASK) || defined(GGML_USE_HIP) || \
@@ -694,13 +786,13 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 
 #else // defined(GGML_USE_HIP)
 
-#if __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
+#if __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR)
     return __dp4a(a, b, c);
-#else // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
+#else // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR)
     const int8_t * a8 = (const int8_t *) &a;
     const int8_t * b8 = (const int8_t *) &b;
     return c + a8[0]*b8[0] + a8[1]*b8[1] + a8[2]*b8[2] + a8[3]*b8[3];
-#endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
+#endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA) || defined(GGML_USE_ILUVATAR)
 
 #endif // defined(GGML_USE_HIP)
 }
@@ -716,11 +808,17 @@ static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float2 v
 
 #if defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
 #define V_DOT2_F32_F16_AVAILABLE
-#endif // defined(GGML_USE_HIP) && (defined(RDNA2) || defined(RDNA3) || defined(RDNA4) || defined(__gfx906__) || defined(CDNA))
+#elif defined(GGML_USE_ILUVATAR)
+#define V_DOT2_F32_F16_AVAILABLE
+#endif // defined(GGML_USE_HIP) && (...) || defined(GGML_USE_ILUVATAR)
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const half2 v, const half2 u) {
 #ifdef V_DOT2_F32_F16_AVAILABLE
+#ifdef GGML_USE_ILUVATAR
+    acc = __hdot2(v, u, acc);
+#else
     asm volatile("v_dot2_f32_f16 %0, %1, %2, %0" : "+v"(acc) : "v"(v), "v"(u));
+#endif
 #else
 #ifdef FAST_FP16_AVAILABLE
     const float2 tmp = __half22float2(v*u);

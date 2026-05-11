@@ -8,9 +8,10 @@ using namespace ggml_cuda_mma;
 
 #define MMF_ROWS_PER_BLOCK 32
 #define MMF_ROWS_PER_BLOCK_CDNA 64
+#define MMF_ROWS_PER_BLOCK_ILUVATAR 64
 
 static __forceinline__ int64_t mmf_get_max_block_size(int cc) {
-    if (GGML_CUDA_CC_IS_CDNA(cc)) {
+    if (GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_ILUVATAR(cc)) {
         return 512;
     } else {
         return 256;

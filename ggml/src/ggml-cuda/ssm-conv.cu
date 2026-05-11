@@ -121,7 +121,7 @@ static void ssm_conv_f32_cuda(const float * src0, const float * src1, const floa
                               const int src0_nb2, const int src1_nb1, float * dst, const int dst_nb0, const int dst_nb1,
                               const int dst_nb2, const int64_t nc, const int64_t nr, const int64_t n_t,
                               const int64_t n_s, cudaStream_t stream) {
-    const int threads = 128;
+    const int threads = 4 * WARP_SIZE;
     GGML_ASSERT(nr % threads == 0);
 
     auto launch_kernel = [&](auto NC) {

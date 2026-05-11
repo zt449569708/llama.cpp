@@ -250,13 +250,13 @@ static ggml_cuda_device_info ggml_cuda_init() {
         info.devices[id].smpb       = prop.sharedMemPerBlock;
         info.devices[id].warp_size  = prop.warpSize;
 
-#ifndef GGML_USE_MUSA
+#if !defined(GGML_USE_MUSA) && !defined(GGML_USE_ILUVATAR)
         int supports_coop_launch = 0;
         CUDA_CHECK(cudaDeviceGetAttribute(&supports_coop_launch, cudaDevAttrCooperativeLaunch, id));
         info.devices[id].supports_cooperative_launch = !!supports_coop_launch;
 #else
         info.devices[id].supports_cooperative_launch = false;
-#endif // !(GGML_USE_MUSA)
+#endif // !(GGML_USE_MUSA) && !(GGML_USE_ILUVATAR)
 
 #if defined(GGML_USE_HIP)
         info.devices[id].smpbo = prop.sharedMemPerBlock;
@@ -282,6 +282,18 @@ static ggml_cuda_device_info ggml_cuda_init() {
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
         info.devices[id].cc = GGML_CUDA_CC_OFFSET_MTHREADS + prop.major * 0x100;
         info.devices[id].cc += prop.minor * 0x10;
+        GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s, VRAM: %zu MiB\n",
+                      id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no",
+                      (size_t)(prop.totalGlobalMem / (1024 * 1024)));
+#elif defined(GGML_USE_ILUVATAR)
+        info.devices[id].warp_size = 64;  // MR100 warp size is 64
+        info.devices[id].smpbo = prop.sharedMemPerBlockOptin > 0 ? prop.sharedMemPerBlockOptin : prop.sharedMemPerBlock;
+        // Map CoreX major.minor to Iluvatar CC range (0x0200000+)
+        {
+            const int major_clamped = (prop.major < 16) ? prop.major : 0;
+            const int minor_clamped = (prop.minor < 16) ? prop.minor : 0;
+            info.devices[id].cc = GGML_CUDA_CC_OFFSET_ILUVATAR + major_clamped * 0x10 + minor_clamped;
+        }
         GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s, VRAM: %zu MiB\n",
                       id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no",
                       (size_t)(prop.totalGlobalMem / (1024 * 1024)));
@@ -1647,6 +1659,7 @@ static void ggml_cuda_op_mul_mat_cublas(
     const int cc = ggml_cuda_info().devices[id].cc;
 
     const bool supports_bf16 = GGML_CUDA_CC_IS_NVIDIA(cc) || GGML_CUDA_CC_IS_AMD(cc) ||
+        GGML_CUDA_CC_IS_ILUVATAR(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 
     const bool use_fp16 =
@@ -3329,6 +3342,15 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
 static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
+#if defined(GGML_USE_ILUVATAR)
+    // CoreX cudaGraphExecUpdate returns internal error (1000) on topology change.
+    // Always destroy old instance (if any) and re-instantiate.
+    if (graph->instance != nullptr) {
+        CUDA_CHECK(cudaGraphExecDestroy(graph->instance));
+        graph->instance = nullptr;
+    }
+    CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+#else
 #if CUDART_VERSION >= 12000
     cudaGraphExecUpdateResultInfo result_info;
     cudaError_t stat = cudaGraphExecUpdate(graph->instance, graph->graph, &result_info);
@@ -3352,6 +3374,7 @@ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_c
     } else {
         GGML_ASSERT(stat == cudaSuccess);
     }
+#endif // defined(GGML_USE_ILUVATAR)
 }
 #endif // USE_CUDA_GRAPH
 
@@ -4230,7 +4253,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
             for (int i = 1; i <= concurrent_event->n_streams; ++i) {
                 cudaStream_t stream = cuda_ctx->stream(cuda_ctx->device, i);
-                CUDA_CHECK(cudaStreamWaitEvent(stream, concurrent_event->fork_event));
+                CUDA_CHECK(cudaStreamWaitEvent(stream, concurrent_event->fork_event, 0));
             }
         }
     };
@@ -4314,7 +4337,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                             // Wait on join events of forked streams in the main stream
                             CUDA_CHECK(cudaEventRecord(concurrent_event->join_events[i - 1],
                                                        cuda_ctx->stream(cuda_ctx->device, i)));
-                            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(), concurrent_event->join_events[i - 1]));
+                            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(), concurrent_event->join_events[i - 1], 0));
                         }
 
                         is_concurrent_event_active = false;
@@ -4404,9 +4427,13 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
     if (use_cuda_graph) {
         ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+#if !defined(GGML_USE_ILUVATAR)
+        // Iluvatar: defer instantiation to ggml_cuda_graph_update_executable
+        // (which always destroy+re-instantiates), to avoid double instantiation.
         if (graph->instance == nullptr) { // Create executable graph from captured graph.
             CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
         }
+#endif // !defined(GGML_USE_ILUVATAR)
         if (cuda_graph_update_required) { // Update graph executable
             ggml_cuda_graph_update_executable(cuda_ctx, graph_key);
         }
@@ -4424,7 +4451,11 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->graph == nullptr) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
+        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE
+#ifdef GGML_USE_ILUVATAR
+            && !GGML_CUDA_CC_IS_ILUVATAR(ggml_cuda_info().devices[cuda_ctx->device].cc)
+#endif
+            ) {
             if (!graph->disable_due_to_gpu_arch) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
