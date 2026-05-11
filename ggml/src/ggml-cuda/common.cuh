@@ -118,9 +118,9 @@
 #define GGML_CUDA_CC_IS_IVCORE10(cc)  (cc >= GGML_CUDA_CC_IVCORE10 && cc < GGML_CUDA_CC_IVCORE11)
 #define GGML_CUDA_CC_IS_IVCORE11(cc)  (cc >= GGML_CUDA_CC_IVCORE11 && cc < 0x0300000)
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUDART_VERSION >= 11070 || defined(GGML_USE_ILUVATAR))
 #    define GGML_CUDA_USE_CUB
-#endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+#endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUDART_VERSION >= 11070 || defined(GGML_USE_ILUVATAR))
 
 #ifdef __CUDA_ARCH_LIST__
 constexpr bool ggml_cuda_has_arch_impl(int) {

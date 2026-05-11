@@ -26,7 +26,8 @@ static __global__ void init_offsets(int * offsets, const int ncols, const int nr
 }
 #endif  // STRIDED_ITERATOR_AVAILABLE
 
-#ifdef GGML_CUDA_USE_CUB
+#if defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)
+// CoreX SDK CUB 不含 DeviceSegmentedSort，回退到 bitonic sort
 void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
                               const float *    x,
                               int *            dst,
@@ -74,7 +75,7 @@ void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
                                                   temp_indices, dst,  // values (indices)
                                                   ncols, 0, sizeof(float) * 8, stream));
         } else if (is_capturing) {
-            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairs(
+            CUDA_CHECK(DeviceSegmentedSort::SortPairs(
                 nullptr, temp_storage_bytes, temp_keys, temp_keys,  // keys (in-place)
                 temp_indices, dst,                                  // values (indices)
                 ncols * nrows, nrows,                               // num items, num segments
@@ -93,7 +94,7 @@ void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
                                                             temp_indices, dst,  // values (indices)
                                                             ncols, 0, sizeof(float) * 8, stream));
         } else if (is_capturing) {
-            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairsDescending(
+            CUDA_CHECK(DeviceSegmentedSort::SortPairsDescending(
                 nullptr, temp_storage_bytes, temp_keys, temp_keys, temp_indices, dst, ncols * nrows, nrows,
                 offset_iterator, offset_iterator + 1, 0, sizeof(float) * 8, stream));
         } else {
@@ -113,7 +114,7 @@ void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
                                                   temp_indices, dst,  // values (indices)
                                                   ncols, 0, sizeof(float) * 8, stream));
         } else if (is_capturing) {
-            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairs(d_temp_storage, temp_storage_bytes, temp_keys, temp_keys,
+            CUDA_CHECK(DeviceSegmentedSort::SortPairs(d_temp_storage, temp_storage_bytes, temp_keys, temp_keys,
                                                            temp_indices, dst, ncols * nrows, nrows, offset_iterator,
                                                            offset_iterator + 1, 0, sizeof(float) * 8, stream));
         } else {
@@ -128,7 +129,7 @@ void argsort_f32_i32_cuda_cub(ggml_cuda_pool & pool,
                                                             temp_indices, dst,  // values (indices)
                                                             ncols, 0, sizeof(float) * 8, stream));
         } else if (is_capturing) {
-            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairsDescending(
+            CUDA_CHECK(DeviceSegmentedSort::SortPairsDescending(
                 d_temp_storage, temp_storage_bytes, temp_keys, temp_keys, temp_indices, dst, ncols * nrows, nrows,
                 offset_iterator, offset_iterator + 1, 0, sizeof(float) * 8, stream));
         } else {
@@ -248,7 +249,7 @@ void ggml_cuda_op_argsort(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     enum ggml_sort_order order = (enum ggml_sort_order) dst->op_params[0];
 
-#ifdef GGML_CUDA_USE_CUB
+#if defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)
     const int    ncols_pad      = next_power_of_2(ncols);
     const size_t shared_mem     = ncols_pad * sizeof(int);
     const size_t max_shared_mem = ggml_cuda_info().devices[ggml_cuda_get_device()].smpb;

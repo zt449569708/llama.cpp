@@ -1,13 +1,14 @@
 #include "argsort.cuh"
 #include "top-k.cuh"
 
-#ifdef GGML_CUDA_USE_CUB
+#if defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)
+// CoreX SDK CUB 不含 DeviceSegmentedSort，回退到 bitonic sort
 #    include <cub/cub.cuh>
 #    if (CCCL_MAJOR_VERSION >= 3 && CCCL_MINOR_VERSION >= 2)
 #        define CUB_TOP_K_AVAILABLE
 using namespace cub;
 #    endif  // CCCL_MAJOR_VERSION >= 3 && CCCL_MINOR_VERSION >= 2
-#endif      // GGML_CUDA_USE_CUB
+#endif      // GGML_CUDA_USE_CUB && !GGML_USE_ILUVATAR
 
 #ifdef CUB_TOP_K_AVAILABLE
 
@@ -35,7 +36,7 @@ static void top_k_cub(ggml_cuda_pool & pool,
                          ncols, k, env));
 }
 
-#elif defined(GGML_CUDA_USE_CUB)  // CUB_TOP_K_AVAILABLE
+#elif defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)  // CUB_TOP_K_AVAILABLE
 
 static int next_power_of_2(int x) {
     int n = 1;
@@ -69,7 +70,7 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     for (int i = 0; i < nrows; i++) {
         top_k_cub(pool, src0_d + i * ncols, dst_d + i * k, ncols, k, stream);
     }
-#elif defined(GGML_CUDA_USE_CUB)  // CUB_TOP_K_AVAILABLE
+#elif defined(GGML_CUDA_USE_CUB) && !defined(GGML_USE_ILUVATAR)  // CUB_TOP_K_AVAILABLE
     // Fall back to argsort + copy
     const int    ncols_pad      = next_power_of_2(ncols);
     const size_t shared_mem     = ncols_pad * sizeof(int);
